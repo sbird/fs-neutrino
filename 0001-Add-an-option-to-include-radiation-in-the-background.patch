@@ -1,0 +1,188 @@
+From 94f447cb966776b530439b73b27116d1797321d9 Mon Sep 17 00:00:00 2001
+From: Simeon Bird <spb@ias.edu>
+Date: Fri, 24 Aug 2012 15:27:32 -0400
+Subject: [PATCH 1/2] Add an option to include radiation in the background
+ evolution. This is required to get massive neutrinos
+ right at early times.
+
+---
+ allvars.h         | 40 +++++++++++++++++++++++++++++++++++++++-
+ begrun.c          |  7 +++++--
+ chemistry_noneq.c |  8 ++------
+ darkenergy.c      |  6 +++++-
+ second_order.c    |  4 ++--
+ subfind_so.c      |  7 +++----
+ 6 files changed, 56 insertions(+), 16 deletions(-)
+
+diff --git a/allvars.h b/allvars.h
+index 783af8a..20e36c7 100644
+--- a/allvars.h
++++ b/allvars.h
+@@ -292,10 +292,48 @@ extern float *CB07obs;
+ #define  LOG_LAMBDA      37.8	/* logarithmic Coulomb factor */
+ #endif
+ 
+-#if defined(CHEMISTRY) || defined(UM_CHEMISTRY)
++#if defined(CHEMISTRY) || defined(UM_CHEMISTRY) || defined(INCLUDE_RADIATION) || defined(KSPACE_NEUTRINOS)
+ #define  T_CMB0      2.728	/* present-day CMB temperature */
+ #endif
+ 
++#if defined(KSPACE_NEUTRINOS) || defined(INCLUDE_RADIATION)
++/* Note there is a slight correction from 4/11
++ * due to the neutrinos being slightly coupled at e+- annihilation.
++ * See Mangano et al 2005 (hep-ph/0506164)
++ *The correction is (3.046/3)^(1/4), for N_eff = 3.046 */
++#define TNU     (T_CMB0*pow(4/11.,1/3.)*1.00381)              /* Neutrino + antineutrino background temperature in Kelvin */
++#endif
++
++/*With slightly relativistic massive neutrinos, for consistency we need to include radiation.
++ * A note on normalisation (as of 08/02/2012):
++ * CAMB appears to set Omega_Lambda + Omega_Matter+Omega_K = 1,
++ * calculating Omega_K in the code and specifying Omega_Lambda and Omega_Matter in the paramfile.
++ * This means that Omega_tot = 1+ Omega_r + Omega_g, effectively
++ * making h0 (very) slightly larger than specified.
++ */
++#ifdef INCLUDE_RADIATION
++/*Stefan-Boltzmann constant in cgs units*/
++#define STEFAN_BOLTZMANN 5.670373e-5
++/* Omega_g = 4 \sigma_B T_{CMB}^4 8 \pi G / (3 c^3 H^2)*/
++#define OMEGAG (4*STEFAN_BOLTZMANN*8*M_PI*GRAVITY/(3*C*C*C*HUBBLE*HUBBLE)*pow(T_CMB0,4)/All.HubbleParam/All.HubbleParam)
++#if (defined KSPACE_NEUTRINOS) || (defined NEUTRINOS)
++    /*Neutrinos are included elsewhere*/
++    #define OMEGAR OMEGAG
++#else
++    /*Neutrinos are included in the radiation*/
++    /*For massless neutrinos, rho_nu/rho_g = 7/8 (T_nu/T_cmb)^4 *N_eff, but we absorbed N_eff into T_nu above*/
++    #define OMEGANU (OMEGAG*7/8.*pow(TNU/T_CMB0,4)*3)
++    /*With massless neutrinos only, add the neutrinos to the radiation*/
++    #define OMEGAR (OMEGAG+OMEGANU)
++#endif
++#else
++        /*Default is no radiation*/
++        #define OMEGAR 0.
++#endif
++
++/* For convenience define OMEGAK*/
++#define OMEGAK (1-All.Omega0 - All.OmegaLambda)
++
+ #define  SEC_PER_MEGAYEAR   3.155e13
+ #define  SEC_PER_YEAR       3.155e7
+ 
+diff --git a/begrun.c b/begrun.c
+index 3ae3939..9a7ceca 100644
+--- a/begrun.c
++++ b/begrun.c
+@@ -96,6 +96,8 @@ void begrun(void)
+   enable_core_dumps_and_fpu_exceptions();
+ #endif
+ 
++  set_units();
++
+ #ifdef DARKENERGY
+ #ifdef TIMEDEPDE
+   fwa_init();
+@@ -107,8 +109,6 @@ void begrun(void)
+   init_modgrav_background_table();
+ #endif
+ 
+-  set_units();
+-
+ #ifdef SUB_TURB_DRIVING
+   sub_turb_read_table();
+ #endif
+@@ -531,6 +531,9 @@ void set_units(void)
+       printf("Annihilation radiation units:\n");
+       printf("UnitDensity_in_Gev_per_cm3 = %g\n", All.UnitDensity_in_Gev_per_cm3);
+ #endif
++#ifdef INCLUDE_RADIATION
++      printf("Omega_R = %g\n",OMEGAR);
++#endif
+ 
+       printf("\n");
+     }
+diff --git a/chemistry_noneq.c b/chemistry_noneq.c
+index e15f1a2..cae1328 100644
+--- a/chemistry_noneq.c
++++ b/chemistry_noneq.c
+@@ -358,9 +358,7 @@ int compute_abundances(int mode, int ithis, double a_start, double a_end)
+       if(All.ComovingIntegrationOn)
+ 	{
+ 	  da = a_end - a_now;
+-	  hubble_a = All.Hubble * sqrt(All.Omega0 / (a_now * a_now * a_now)
+-				       + (1 - All.Omega0 - All.OmegaLambda) / (a_now * a_now) +
+-				       All.OmegaLambda);
++	  hubble_a = hubble_function(a_now);
+ 
+ 	  time3 = da / (a_now * hubble_a);
+ 	  /*
+@@ -406,9 +404,7 @@ int compute_abundances(int mode, int ithis, double a_start, double a_end)
+ 
+       if(All.ComovingIntegrationOn)
+ 	{
+-	  hubble_a = All.Hubble * sqrt(All.Omega0 / (a_now * a_now * a_now)
+-				       + (1 - All.Omega0 - All.OmegaLambda) / (a_now * a_now) +
+-				       All.OmegaLambda);
++	  hubble_a = hubble_function(a_now);
+ 
+ 	  /* get dt to be in the system units */
+ 	  dt = dt * base.time;	/* in seconds */
+diff --git a/darkenergy.c b/darkenergy.c
+index ef21174..a038d29 100644
+--- a/darkenergy.c
++++ b/darkenergy.c
+@@ -414,7 +414,11 @@ double INLINE_FUNC hubble_function(double a)
+ #ifdef EXTERNALHUBBLE
+   hubble_a = hubble_function_external(a);
+ #else
+-  hubble_a = All.Omega0 / (a * a * a) + (1 - All.Omega0 - All.OmegaLambda) / (a * a)
++  hubble_a = All.Omega0 / (a * a * a) + OMEGAK / (a * a)
++#ifdef INCLUDE_RADIATION
++  /*Note OMEGAR is defined to be 0 if INCLUDE_RADIATION is not on*/
++   + OMEGAR/(a*a*a*a)
++#endif
+ #ifdef DARKENERGY
+     + DarkEnergy_a(a);
+ #else
+diff --git a/second_order.c b/second_order.c
+index 96ed33c..efa9d91 100644
+--- a/second_order.c
++++ b/second_order.c
+@@ -18,7 +18,7 @@ double F1_Omega(double a)
+ {
+   double omega_a;
+ 
+-  omega_a = All.Omega0 / (All.Omega0 + a * (1 - All.Omega0 - All.OmegaLambda) + a * a * a * All.OmegaLambda);
++  omega_a = All.Omega0 / (All.Omega0 + a * OMEGAK + a * a * a * All.OmegaLambda + OMEGAR/a);
+ 
+   return pow(omega_a, 5.0 / 9);
+ }
+@@ -27,7 +27,7 @@ double F2_Omega(double a)
+ {
+   double omega_a;
+ 
+-  omega_a = All.Omega0 / (All.Omega0 + a * (1 - All.Omega0 - All.OmegaLambda) + a * a * a * All.OmegaLambda);
++  omega_a = All.Omega0 / (All.Omega0 + a * (1 - All.Omega0 - All.OmegaLambda-OMEGAR) + a * a * a * All.OmegaLambda + OMEGAR/a);
+ 
+   return 2.0 * pow(omega_a, 6.0 / 11);
+ }
+diff --git a/subfind_so.c b/subfind_so.c
+index 5daa822..db6fdea 100644
+--- a/subfind_so.c
++++ b/subfind_so.c
+@@ -115,10 +115,9 @@ void subfind_overdensity(void)
+   rhoback = 3 * All.Omega0 * All.Hubble * All.Hubble / (8 * M_PI * All.G);
+ 
+   omegaz =
+-    All.Omega0 * pow(1 + z,
+-		     3) / (All.Omega0 * pow(1 + z, 3) + (1 - All.Omega0 - All.OmegaLambda) * pow(1 + z,
+-												 2) +
+-			   All.OmegaLambda);
++    All.Omega0 * pow(1 + z,3) / 
++                (All.Omega0 * pow(1 + z, 3) + OMEGAR*pow(1+z,4) +
++                 OMEGAK * pow(1 + z, 2) +  All.OmegaLambda);
+ 
+   DeltaMean200 = 200.0;
+   DeltaCrit200 = 200.0 / omegaz;
+-- 
+1.7.11.4
+

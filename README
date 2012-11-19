@@ -1,0 +1,15 @@
+==README for the Fourier-space neutrino implementation of 1209.0461==
+
+These two patches implement the code described in the above paper. 
+Patch 0001- adds a radiation component to the cosmological background evolution. This has a small effect, but is needed to get the neutrinos correct at early times. Enabled with the compile flag INCLUDE_RADIATION.
+
+Patch 0002- implements the neutrino method itself, enabled with the compile flag KSPACE_NEUTRINOS_2. 
+
+It adds the following run-time variables:
+
+KspaceTransferFunction - File where the initial transfer functions are stored, as output by CAMB. 
+TimeTransfer - Redshift at which the above transfer function was generated. Unless you are resuming from a snapshot, this should be the same as TimeBegin.
+OmegaBaryonCAMB - The value of OmegaBaryon given to CAMB for the above transfer function. If there are baryons in your simulation, this should equal OmegaBaryon. Otherwise OmegaBaryon will be zero, but this will not be.
+InputSpectrum_UnitLength_in_cm - Length scale used in the transfer function. By default CAMB uses Mpc, in which case this should be  3.085678e24
+
+MNue, MNum, MNut - The masses of the three neutrino species, in eV. Some of them may be zero.
